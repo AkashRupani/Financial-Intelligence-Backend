@@ -1,6 +1,6 @@
 module.exports = {
     HDFC: {
-        date: ["Date", "Value Dt"],
+        date: ["Date"],
         description: ["Narration"],
         debit: ["Withdrawal Amt.", "Withdrawal Amt"],
         credit: ["Deposit Amt.", "Deposit Amt"],

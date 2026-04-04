@@ -1,4 +1,5 @@
 const columnMappings = require("./columnMappings");
+const { categorizeTransaction } = require("../categorization/categorizationEngine");
 
 function normalizeHeader(header) {
   return header
@@ -8,50 +9,49 @@ function normalizeHeader(header) {
     .trim()
     .toLowerCase();
 }
-
-// function parseDate(dateStr) {
-//   if (!dateStr) return null;
-
-//   const parts = dateStr.split(/[\/\-]/);
-//   if (parts.length !== 3) return null;
-
-//   const [day, month, year] = parts.map(Number);
-//   const date = new Date(year, month - 1, day);
-
-//   return isNaN(date.getTime()) ? null : date;
-// }
 function parseDateSafe(value) {
-  if (!value) return null;
+  if (value === null || value === undefined || value === "") return null;
 
-  // Case 1: Already a Date object
-  if (value instanceof Date && !isNaN(value)) {
-    return value;
+  // Convert numeric strings to numbers
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    value = Number(value.trim());
   }
 
-  // Case 2: Excel serial number (e.g. 45123)
+  // Excel serial date (number)
   if (typeof value === "number") {
     const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-    const parsed = new Date(excelEpoch.getTime() + value * 86400000);
-    return isNaN(parsed) ? null : parsed;
+    const millis = value * 86400000;
+    return new Date(excelEpoch.getTime() + millis);
   }
 
-  // Case 3: String dates (DD/MM/YYYY or DD-MM-YYYY)
   if (typeof value === "string") {
     const cleaned = value.trim();
 
-    const match = cleaned.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    // DD-MM-YYYY or DD/MM/YYYY
+    const match = cleaned.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})$/);
     if (match) {
       const day = Number(match[1]);
       const month = Number(match[2]) - 1;
       const year = Number(match[3]);
 
-      const parsed = new Date(Date.UTC(year, month, day));
-      return isNaN(parsed) ? null : parsed;
+      return new Date(Date.UTC(year, month, day));
     }
 
-    // Case 4: ISO string
-    const iso = new Date(cleaned);
-    if (!isNaN(iso)) return iso;
+    // Sometimes CSV exports DD-MM-YY
+    const shortMatch = cleaned.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2})$/);
+    if (shortMatch) {
+      const day = Number(shortMatch[1]);
+      const month = Number(shortMatch[2]) - 1;
+      const year = 2000 + Number(shortMatch[3]);
+
+      return new Date(Date.UTC(year, month, day));
+    }
+
+    // ISO fallback only
+    if (/^\d{4}-\d{2}-\d{2}/.test(cleaned)) {
+      const parsed = new Date(cleaned);
+      if (!isNaN(parsed)) return parsed;
+    }
   }
 
   return null;
@@ -76,14 +76,32 @@ function getValue(row, possibleColumns) {
 
   return null;
 }
+function isSummaryRow(row) {
+  const text = Object.values(row)
+    .join(" ")
+    .toLowerCase();
 
-function parseStatement(rows, bank) {
+  const summaryKeywords = [
+    "statement summary",
+    "opening balance",
+    "closing balance",
+    "closing bal",
+    "debits",
+    "credits",
+    "total",
+  ];
+
+  return summaryKeywords.some(keyword => text.includes(keyword));
+}
+
+async function parseStatement(rows, bank) {
   const mapping = columnMappings[bank];
   if (!mapping) throw new Error("Unsupported bank format");
 
   const transactions = [];
 
   for (const row of rows) {
+    if (isSummaryRow(row)) continue;
     const rawDate = getValue(row, mapping.date);
     const date = parseDateSafe(rawDate);
 
@@ -96,13 +114,18 @@ function parseStatement(rows, bank) {
     // Skip rows that are not real transactions
     if (!debit && !credit) continue;
 
+    const { category, fingerprint } =
+    await categorizeTransaction(description);
+
     transactions.push({
       date,
-      description: getValue(row, mapping.description) || "N/A",
+      description,
+      vendorFingerprint: fingerprint,
+      category,
       type: debit > 0 ? "expense" : "income",
       amount: debit > 0 ? debit : credit,
       balance: Number(getValue(row, mapping.balance)) || 0,
-      bank,
+      bank
     });
   }
 

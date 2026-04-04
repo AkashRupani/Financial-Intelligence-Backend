@@ -83,7 +83,7 @@ router.post("/csv", upload.single("file"), async (req, res) => {
         }
 
         // 6️⃣ Parse normalized transactions
-        const transactions = parseStatement(rows, bank);
+        const transactions = await parseStatement(rows, bank);
 
         if (!transactions.length) {
           return res.status(400).json({
